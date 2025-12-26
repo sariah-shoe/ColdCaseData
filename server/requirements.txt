@@ -1,0 +1,30 @@
+# Web API
+fastapi
+uvicorn[standard]
+
+# HTTP + scraping
+requests
+beautifulsoup4
+
+# OCR / PDF → image
+pdf2image
+pytesseract
+Pillow
+
+# Database
+sqlalchemy
+psycopg[binary]
+alembic
+
+# Data processing
+pandas
+numpy
+
+# NLP / analysis
+scikit-learn
+nltk
+
+# Utilities
+python-dotenv
+tenacity
+tqdm
