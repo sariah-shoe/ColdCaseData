@@ -8,6 +8,7 @@ RUN apt-get update && apt-get install -y \
     poppler-utils \
     libglib2.0-0 \
     libgl1 \
+    nano \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .

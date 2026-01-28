@@ -1,27 +1,30 @@
 import json
 import os
-from typing import Dict, TypedDict
-
-class CaseRecord(TypedDict):
-    url: str
-    name: str
-    source_status: str
+from typing import Dict
+from ingest.domain import CaseRecord
 
 DEFAULT_PATH = "ingest/pending_cases.json"
 
-
-def load_pending(path: str = DEFAULT_PATH) -> Dict[str, CaseRecord]:
+def load_pending(path: str = DEFAULT_PATH) -> dict:
     if not os.path.exists(path):
         return {}
 
     with open(path, "r") as f:
-        return json.load(f)
+        raw = json.load(f)
+
+    return {
+        k: CaseRecord.from_dict(v)
+        for k, v in raw.items()
+    }
 
 
-def write_pending(cases: Dict[str, CaseRecord], path: str = DEFAULT_PATH) -> None:
+def write_pending(cases: dict, path: str = DEFAULT_PATH):
     with open(path, "w") as f:
-        json.dump(cases, f, indent=2)
-
+        json.dump(
+            {k: v.to_dict() for k, v in cases.items()},
+            f,
+            indent=2,
+        )
 
 def remove_processed(
     cases: Dict[str, CaseRecord],

@@ -1,60 +1,45 @@
 import requests
 from bs4 import BeautifulSoup
-import sys
 import os
 import time
-import json
 from tqdm import tqdm
-from sqlalchemy import select, extract
 from db import SessionLocal
-from db.models import ColdCase
+from ingest.queries import find_case
 from ingest.pending import write_pending
-from typing import Dict, TypedDict, Tuple, Optional
+from typing import Dict, Optional
+from ingest.domain import PDF_DIR, CaseRecord, CaseStatus, Mode
+from sqlalchemy.exc import MultipleResultsFound
 
-class CaseRecord(TypedDict):
-    url: str
-    name: str
-    source_status: str
 
-# Global variables for downloading PDFs
-PDF_DIR = "coldCasePDFs"
+# Rate limit variable
 RATE_LIMIT_SECONDS = 1.0 
     
-def findRecord(pdfName: str, session) -> Tuple[bool, str]:
-    # Split the name so that I can get the year and the last name
-    yearName = pdfName.split("-")
-    
-    # Format the year
+def find_existing_case_status(pdf_name: str, session) -> Optional[str]:
     try:
-        year = int(yearName[0])
+        year_str, rest = pdf_name.split("-", 1)
+        year = int(year_str)
     except ValueError:
-        return False, "N/A"
+        return None
 
-    if year < 70:
-        year = 2000 + year if year < 10 else 2000 + year
-    elif 70 <= year <= 99:
-        year = 1900 + year
+    if year < 30:
+        year += 2000
+    elif year <= 99:
+        year += 1900
     else:
-        return False, "N/A"
+        return None
 
-    # Extract the last name
-    lastName = yearName[1].replace(".pdf", "")
-    
-    # Try to find the record of this person
-    stmt = (
-        select(ColdCase.status)
-        .where(ColdCase.victim.ilike(f"%{lastName}%"))
-        .where(extract("year", ColdCase.incident_date) == year)
-    )
+    last_name = rest.replace(".pdf", "").replace("-", " ")
+    try:
+        result = find_case(session=session, victim=last_name, year=year, mode=Mode.AND)
+        return result.status if result else None
+    except MultipleResultsFound:
+        print(
+            f"[FETCH WARNING] Multiple existing cases matched "
+            f"(year={year}, last_name={last_name}). "
+            f"Forcing update."
+        )
+        return None
 
-    result = session.execute(stmt).scalar_one_or_none()
-    
-    # Return whether or not they are found and the status of their case
-    if(result is None):
-        return(False, "N/A")
-    else:
-        return(True, result)
-    
     
 def getURLs(session) -> Dict[str, CaseRecord]:
     # URL and header for request
@@ -96,30 +81,31 @@ def getURLs(session) -> Dict[str, CaseRecord]:
             
             # Find out if I already have the pdf 
             if(pdfUrl.lower().endswith(".pdf")):
-                exists, status = findRecord(pdfName, session)
+                existing_status = find_existing_case_status(pdfName, session)
+                exists = existing_status is not None
             
                 # If I don't have the pdf or if the status of the case changed, add the link
-                if("solved" in pdfUrl and (not exists or (exists and status != "solved"))):
-                    cases[pdfName] = {
-                        "url" : pdfUrl,
-                        "name" : pdfName,
-                        "source_status" : "solved"
-                    }
+                if("solved" in pdfUrl and (not exists or (exists and existing_status != "solved"))):
+                    cases[pdfName] = CaseRecord(
+                        url=pdfUrl,
+                        pdf_name=pdfName,
+                        status=CaseStatus.SOLVED
+                    )
                     
                 # If I don't have the pdf or if the status of the case changed, add the link
-                elif("warrant" in pdfUrl and (not exists or (exists and status != "warrant"))):
-                    cases[pdfName] = {
-                        "url" : pdfUrl,
-                        "name" : pdfName,
-                        "source_status" : "warrant"
-                    }
+                elif("warrant" in pdfUrl and (not exists or (exists and existing_status != "warrant"))):
+                    cases[pdfName] = CaseRecord(
+                        url=pdfUrl,
+                        pdf_name=pdfName,
+                        status=CaseStatus.WARRANT
+                    )
                 # If I don't have the pdf add it
                 elif(not exists):
-                    cases[pdfName] = {
-                        "url" : pdfUrl,
-                        "name" : pdfName,
-                        "source_status" : "cold"
-                    }
+                    cases[pdfName] = CaseRecord(
+                        url=pdfUrl,
+                        pdf_name=pdfName,
+                        status=CaseStatus.COLD
+                    )
         
         # Return my lists that I need to pull
         return(cases)
@@ -140,20 +126,20 @@ def downloadPDFs(cases: Dict[str, CaseRecord]) -> Dict[str, CaseRecord]:
     # Go through each case
     for name, case in tqdm(cases.items(), desc="Downloading PDFs"):
         filename = name
-        filepath = os.path.join(PDF_DIR, filename)
+        filepath = PDF_DIR / filename
 
         # Skip if already downloaded
-        if os.path.exists(filepath):
+        if filepath.exists():
             downloaded[name] = case
             continue
 
         try:
-            r = requests.get(case["url"], headers=headers, timeout=15)
+            r = requests.get(case.url, headers=headers, timeout=15)
             r.raise_for_status()
 
             # Safety check
             if "application/pdf" not in r.headers.get("Content-Type", ""):
-                print(f"Skipping non-PDF response: {case['url']}")
+                print(f"Skipping non-PDF response: {case.url}")
                 continue
 
             with open(filepath, "wb") as f:
@@ -165,7 +151,7 @@ def downloadPDFs(cases: Dict[str, CaseRecord]) -> Dict[str, CaseRecord]:
             time.sleep(RATE_LIMIT_SECONDS)
 
         except requests.RequestException as e:
-            print(f"Failed to download {case['url']}")
+            print(f"Failed to download {case.url}")
             print(e)
             continue
 
